@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-
+import random
 # flake8: noqa F401
 from collections.abc import Callable
 
@@ -122,12 +122,110 @@ def compute_speed_vectors_for_angles(
     """
     vectors = []
     current_angle = np.degrees(np.arccos(np.dot(ship_heading, wind_heading)))
-    for angle_offset in (-45, -30, -15, 0, 15, 30, 45):
+    for angle_offset in (-30, -15, 0, 15, 30):
         angle = current_angle + angle_offset
         new_heading = np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
         new_speed_angle = np.degrees(np.arccos(np.dot(wind_heading, new_heading)))
         new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
         vectors.append(compute_ship_speed_vector(new_heading, new_speed))
+    return vectors
+
+
+def compute_proposed_new_ship_locations(
+    location: Location,
+    ship_heading: np.ndarray,
+    wind_heading: np.ndarray,
+    dt: float,
+) -> list[Location]:
+    """
+    Compute the proposed new ship positions for different angles.
+
+    Parameters
+    ----------
+    location:
+        The current location of the ship.
+    ship_heading:
+        The heading of the ship.
+    wind_heading:
+        The heading of the wind.
+    dt:
+        The time step in hours.
+
+    Returns
+    -------
+    locations:
+        The proposed new ship positions for different angles.
+    """
+    locations = []
+    for v in compute_speed_vectors_for_angles(ship_heading, wind_heading):
+        new_location_vec = np.asarray([location.longitude, location.latitude]) + v*dt
+        new_longitude, new_latitude = new_location_vec
+        locations.append(Location(longitude=new_longitude, latitude=new_latitude))
+    return locations
+
+
+def compute_best_ship_angle(
+    location: Location,
+    ship_heading: np.ndarray,
+    wind_heading: np.ndarray,
+    destination: Location,
+    dt: float,
+) -> float:
+    """
+    Compute the best ship position to reach the destination.
+
+    We first compute the proposed new ship positions for different angles.
+    Then at each proposed location, we compute the heading to the destination.
+    For each heading, we compute the speed value based on the wind direction.
+    Finally, we select the location that will take us to the destination the fastest.
+
+    Parameters
+    ----------
+    location:
+        The current location of the ship.
+    ship_heading:
+        The heading of the ship.
+    wind_heading:
+        The heading of the wind.
+    destination:
+        The destination location.
+    dt:
+        The time step in hours.
+
+    Returns
+    -------
+    best_location:
+        The best ship position to reach the destination.
+    """
+    wind_heading = wind_heading / np.linalg.norm(wind_heading)
+    proposed_locations = compute_proposed_new_ship_locations(
+        location=location,
+        ship_heading=ship_heading,
+        wind_heading=wind_heading,
+        dt=dt,
+    )
+    best_angle = None
+    best_time = np.inf
+    for proposed_location, angle in zip(proposed_locations, (-30, -15, 0, 15, 30)):
+        heading = np.array(
+            [
+                destination.longitude - proposed_location.longitude,
+                destination.latitude - proposed_location.latitude,
+            ]
+        )
+        heading = heading / np.linalg.norm(heading)
+        speed = np.abs(np.cos(np.radians(np.degrees(np.arccos(np.dot(wind_heading, heading))) / 2)))
+        dist = distance_on_surface(
+            longitude1=proposed_location.longitude,
+            latitude1=proposed_location.latitude,
+            longitude2=destination.longitude,
+            latitude2=destination.latitude,
+        )
+        time = dist / speed if speed > 0 else np.inf
+        if time < best_time:
+            best_time = time
+            best_angle = angle
+    return best_angle
 
 
 class Bot:
@@ -247,9 +345,24 @@ class Bot:
             if dist < ch.radius:
                 ch.reached = True
             if not ch.reached:
-                instructions.location = Location(
-                    longitude=ch.longitude, latitude=ch.latitude
+                # instructions.location = Location(
+                #     longitude=ch.longitude, latitude=ch.latitude
+                # )
+                angle = compute_best_ship_angle(
+                    location=Location(longitude=longitude, latitude=latitude),
+                    ship_heading=np.asarray(vector),
+                    wind_heading=np.asarray(current_wind),
+                    destination=Location(longitude=ch.longitude, latitude=ch.latitude),
+                    dt=dt,
                 )
+                if angle is not None and random.random() < 0.5:
+                    if angle < 0:
+                        instructions.left = abs(angle)
+                    else:
+                        instructions.right = abs(angle)
+                else:
+                    instructions.location = Location(
+                        longitude=ch.longitude, latitude=ch.latitude
+                    )
                 break
-
         return instructions
