@@ -83,6 +83,7 @@ def should_change_direction(wind_angle, ship_angle, max_angle: int = 100) -> boo
 
     return angle_difference(wind_angle, ship_angle) > max_angle
 
+
 def compute_ship_speed_vector(heading: np.ndarray, speed: float) -> np.ndarray:
     """
     Compute the speed vector from the heading and speed.
@@ -124,7 +125,7 @@ def compute_speed_vectors_for_angles(
     current_angle = np.degrees(np.arccos(np.dot(ship_heading, wind_heading)))
     for angle_offset in (-30, -15, 0, 15, 30):
         angle = current_angle + angle_offset
-        new_heading = np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
+        new_heading = np.array([np.sin(np.radians(angle)), np.cos(np.radians(angle))])
         new_speed_angle = np.degrees(np.arccos(np.dot(wind_heading, new_heading)))
         new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
         vectors.append(compute_ship_speed_vector(new_heading, new_speed))
@@ -333,10 +334,6 @@ class Bot:
             )
             # Consider slowing down if the checkpoint is close
             jump = dt * np.linalg.norm(speed)
-            if should_change_direction(wind_angle, ship_angle):
-                # TODO: Turn left or right based on the wind direction
-                instructions.left = 10.0
-                break
             if dist < 2.0 * ch.radius + jump:
                 instructions.sail = min(ch.radius / jump, 1)
             else:
@@ -355,7 +352,8 @@ class Bot:
                     destination=Location(longitude=ch.longitude, latitude=ch.latitude),
                     dt=dt,
                 )
-                if angle is not None and random.random() < 0.5:
+                print(angle, wind_angle, ship_angle)
+                if should_change_direction(wind_angle, ship_angle) and angle is not None:
                     if angle < 0:
                         instructions.left = abs(angle)
                     else:
