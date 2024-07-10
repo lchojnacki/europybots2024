@@ -16,6 +16,53 @@ from vendeeglobe import (
 from vendeeglobe.utils import distance_on_surface
 
 
+def compute_ship_speed_vector(heading: np.ndarray, speed: float) -> np.ndarray:
+    """
+    Compute the speed vector from the heading and speed.
+
+    Parameters
+    ----------
+    heading:
+        The heading of the ship.
+    speed:
+        The speed of the ship.
+
+    Returns
+    -------
+    vector:
+        The speed vector.
+    """
+    return speed * heading
+
+
+def compute_speed_vectors_for_angles(
+    ship_heading: np.ndarray, wind_heading: np.ndarray
+) -> list[np.ndarray]:
+    """
+    Compute the speed vectors for the ship at different angles.
+
+    Parameters
+    ----------
+    ship_heading:
+        The heading of the ship.
+    wind_heading:
+        The heading of the wind.
+
+    Returns
+    -------
+    vectors:
+        The speed vectors for the ship at different angles.
+    """
+    vectors = []
+    current_angle = np.degrees(np.arccos(np.dot(ship_heading, wind_heading)))
+    for angle_offset in (-45, -30, -15, 0, 15, 30, 45):
+        angle = current_angle + angle_offset
+        new_heading = np.array([np.cos(np.radians(angle)), np.sin(np.radians(angle))])
+        new_speed_angle = np.degrees(np.arccos(np.dot(wind_heading, new_heading)))
+        new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
+        vectors.append(compute_ship_speed_vector(new_heading, new_speed))
+
+
 class Bot:
     """
     This is the ship-controlling bot that will be instantiated for the competition.
@@ -103,9 +150,8 @@ class Bot:
         instructions = Instructions()
 
         # TODO: Remove this, it's only for testing =================
-        current_position_forecast = forecast(
-            latitudes=latitude, longitudes=longitude, times=0
-        )
+        current_wind = forecast(latitudes=latitude, longitudes=longitude, times=0)
+
         current_position_terrain = world_map(latitudes=latitude, longitudes=longitude)
         # ===========================================================
 
