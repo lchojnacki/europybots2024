@@ -16,6 +16,73 @@ from vendeeglobe import (
 from vendeeglobe.utils import distance_on_surface
 
 
+def wind_direction(u: float, v: float) -> float:
+    """
+    Calculate the meteorological wind direction based on the horizontal wind
+    components.
+
+    Args:
+        u: Horizontal wind component in the x-direction.
+        v: Horizontal wind component in the y-direction.
+
+    Returns:
+        The meteorological wind direction in degrees.
+    """
+
+    # Calculate the angle using atan2
+    theta = np.atan2(v, u)
+
+    # Convert the angle from radians to degrees
+    theta_degrees = np.degrees(theta)
+
+    # Convert to meteorological wind direction
+    direction = (270 - theta_degrees) % 360
+
+    return direction
+
+
+def angle_difference(angle1: float, angle2: float) -> float:
+    """
+    Calculate the absolute difference between two angles and normalize it to be
+    within 0 to 360 degrees.
+
+    Args:
+        angle1: The first angle in degrees.
+        angle2: The second angle in degrees.
+
+    Returns:
+        The normalized absolute difference between the two angles in degrees.
+    """
+
+    # Calculate the absolute difference using numpy
+    diff = np.abs(angle1 - angle2)
+
+    # Normalize the difference to be within 0 to 360 degrees
+    diff = diff % 360
+
+    # Adjust if the difference is greater than 180 degrees
+    diff: float = np.where(diff > 180, 360 - diff, diff)
+
+    return diff
+
+
+def should_change_direction(wind_angle, ship_angle, max_angle: int = 100) -> bool:
+    """
+    Determine if the ship should change its direction based on the difference
+    between the wind angle and the ship's angle.
+
+    Args:
+        wind_angle: The angle of the wind in degrees.
+        ship_angle: The ship's current angle in degrees.
+        max_angle: The maximum allowable angle difference for not changing
+                   direction (default is 100 degrees).
+
+    Returns:
+        A boolean indicating whether the ship should change its direction.
+    """
+
+    return angle_difference(wind_angle, ship_angle) > max_angle
+
 def compute_ship_speed_vector(heading: np.ndarray, speed: float) -> np.ndarray:
     """
     Compute the speed vector from the heading and speed.
@@ -151,6 +218,8 @@ class Bot:
 
         # TODO: Remove this, it's only for testing =================
         current_wind = forecast(latitudes=latitude, longitudes=longitude, times=0)
+        wind_angle = wind_direction(*current_wind)
+        ship_angle = wind_direction(*vector)
 
         current_position_terrain = world_map(latitudes=latitude, longitudes=longitude)
         # ===========================================================
@@ -166,6 +235,10 @@ class Bot:
             )
             # Consider slowing down if the checkpoint is close
             jump = dt * np.linalg.norm(speed)
+            if should_change_direction(wind_angle, ship_angle):
+                # TODO: Turn left or right based on the wind direction
+                instructions.left = 10.0
+                break
             if dist < 2.0 * ch.radius + jump:
                 instructions.sail = min(ch.radius / jump, 1)
             else:
