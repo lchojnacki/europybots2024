@@ -18,6 +18,9 @@ from vendeeglobe.utils import distance_on_surface
 
 ANGLE_OFFSETS: Final[tuple[int]] = tuple(range(-45, 46, 5))
 
+PREVIOUS_CHECKPOINT: Checkpoint = None
+CURRENT_CHECKPOINT: Checkpoint = None
+
 def wind_direction(u: float, v: float) -> float:
     """
     Calculate the meteorological wind direction based on the horizontal wind
@@ -173,6 +176,10 @@ def compute_proposed_new_ship_locations(
     for v in compute_speed_vectors_for_angles(ship_heading, wind_heading):
         new_location_vec = np.asarray([location.longitude, location.latitude]) + v*dt
         new_longitude, new_latitude = new_location_vec
+        # if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+        #                        (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+        #                        (new_longitude, new_latitude)):
+        #     locations.append(Location(longitude=new_longitude, latitude=new_latitude))
         locations.append(Location(longitude=new_longitude, latitude=new_latitude))
     return locations
 
@@ -327,7 +334,7 @@ class Bot:
         """
         # Initialize the instructions
         instructions = Instructions()
-
+        global PREVIOUS_CHECKPOINT, CURRENT_CHECKPOINT
         # TODO: Remove this, it's only for testing =================
         current_wind = forecast(latitudes=latitude, longitudes=longitude, times=0)
         wind_angle = wind_direction(*current_wind)
@@ -338,6 +345,7 @@ class Bot:
         # print(Simulate().simulate_position_after_moving_at_different_angles(longitude, latitude, speed, dt))
         # Go through all checkpoints and find the next one to reach
         for previous_ch, ch in zip(self.course, self.course[1:]):
+            PREVIOUS_CHECKPOINT, CURRENT_CHECKPOINT = previous_ch, ch
             # Compute the distance to the checkpoint
             dist = distance_on_surface(
                 longitude1=longitude,
