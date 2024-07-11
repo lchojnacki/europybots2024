@@ -2,6 +2,7 @@
 import random
 # flake8: noqa F401
 from collections.abc import Callable
+from typing import Final
 
 import numpy as np
 
@@ -15,6 +16,7 @@ from vendeeglobe import (
 )
 from vendeeglobe.utils import distance_on_surface
 
+ANGLE_OFFSETS: Final[tuple[int]] = tuple(range(-45, 46, 5))
 
 def wind_direction(u: float, v: float) -> float:
     """
@@ -122,13 +124,23 @@ def compute_speed_vectors_for_angles(
         The speed vectors for the ship at different angles.
     """
     vectors = []
-    current_angle = np.degrees(np.arccos(np.dot(ship_heading, wind_heading)))
-    for angle_offset in (-30, -15, 0, 15, 30):
-        angle = current_angle + angle_offset
-        new_heading = np.array([np.sin(np.radians(angle)), np.cos(np.radians(angle))])
-        new_speed_angle = np.degrees(np.arccos(np.dot(wind_heading, new_heading)))
+    dot = np.dot(ship_heading, wind_heading) / (np.linalg.norm(ship_heading) * np.linalg.norm(wind_heading))
+    current_angle = np.degrees(np.arccos(dot))
+    wind_angle = np.degrees(np.arctan2(wind_heading[1], wind_heading[0]))
+    # print(f"Ship/wind angle", 180-angle_difference(current_angle, wind_angle))
+    for angle_offset in ANGLE_OFFSETS:
+        new_angle = current_angle + angle_offset
+
+        new_heading = np.array([np.cos(np.radians(new_angle)), np.sin(np.radians(new_angle))])
+        new_dot = np.dot(wind_heading, new_heading) / (np.linalg.norm(wind_heading) * np.linalg.norm(new_heading))
+        new_speed_angle = np.degrees(np.arccos(new_dot))
         new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
         vectors.append(compute_ship_speed_vector(new_heading, new_speed))
+
+        heading_angle = np.degrees(np.arctan2(new_heading[1], new_heading[0]))
+
+        assert angle_difference(new_angle, heading_angle) < 1e-5
+
     return vectors
 
 
@@ -207,7 +219,7 @@ def compute_best_ship_angle(
     )
     best_angle = None
     best_time = np.inf
-    for proposed_location, angle in zip(proposed_locations, (-30, -15, 0, 15, 30)):
+    for proposed_location, angle in zip(proposed_locations, ANGLE_OFFSETS):
         heading = np.array(
             [
                 destination.longitude - proposed_location.longitude,
@@ -322,7 +334,7 @@ class Bot:
 
         current_position_terrain = world_map(latitudes=latitude, longitudes=longitude)
         # ===========================================================
-
+        # print(Simulate().simulate_position_after_moving_at_different_angles(longitude, latitude, speed, dt))
         # Go through all checkpoints and find the next one to reach
         for ch in self.course:
             # Compute the distance to the checkpoint
