@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 import random
+
 # flake8: noqa F401
 from collections.abc import Callable
 from typing import Final
@@ -20,6 +21,51 @@ ANGLE_OFFSETS: Final[tuple[int]] = tuple(range(-45, 46, 5))
 
 PREVIOUS_CHECKPOINT: Checkpoint = None
 CURRENT_CHECKPOINT: Checkpoint = None
+
+
+def distance_point_to_line(segment_start, segment_end, point) -> float:
+    """
+    Calculate the perpendicular distance between a line defined by two points
+    and a given point.
+
+    Args:
+        segment_start: The starting point of the line segment.
+        segment_end: The ending point of the line segment.
+        point: The point to calculate the distance from the line.
+
+    Returns:
+        The perpendicular distance between the line and the point.
+    """
+    x1, y1 = segment_start
+    x2, y2 = segment_end
+    x0, y0 = point
+
+    a_coeff = y2 - y1
+    b_coeff = x1 - x2
+    c_coeff = x2 * y1 - x1 * y2
+
+    return abs(a_coeff * x0 + b_coeff * y0 + c_coeff) / np.sqrt(a_coeff**2 + b_coeff**2)
+
+
+def is_position_allowed(segment_start, segment_end, position) -> bool:
+    """
+    Check if a given position is allowed based on its distance from a line
+    segment.
+
+    Args:
+        segment_start: The starting point of the line segment.
+        segment_end: The ending point of the line segment.
+        position: The position to check.
+
+    Returns:
+        True if the position is allowed, False otherwise.
+    """
+    distance = distance_point_to_line(segment_start, segment_end, position)
+    x0, _ = position
+    scaled_x0 = 0.1 * x0
+    y = -np.pow(scaled_x0, 2) + 4
+    return distance <= y
+
 
 def wind_direction(u: float, v: float) -> float:
     """
@@ -71,7 +117,9 @@ def angle_difference(angle1: float, angle2: float) -> float:
     return diff
 
 
-def should_change_direction(wind_angle, ship_angle, next_position: Location, max_angle: int = 100) -> bool:
+def should_change_direction(
+    wind_angle, ship_angle, next_position: Location, max_angle: int = 100
+) -> bool:
     """
     Determine if the ship should change its direction based on
      * the difference between the wind angle and the ship's angle.
@@ -86,10 +134,10 @@ def should_change_direction(wind_angle, ship_angle, next_position: Location, max
     Returns:
         A boolean indicating whether the ship should change its direction.
     """
-    # if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
-    #                        (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
-    #                        (next_position.longitude, next_position.latitude)):
-    #     return False
+    if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+                           (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+                           (next_position.longitude, next_position.latitude)):
+        return False
     return angle_difference(wind_angle, ship_angle) > max_angle
 
 
@@ -131,15 +179,21 @@ def compute_speed_vectors_for_angles(
         The speed vectors for the ship at different angles.
     """
     vectors = []
-    dot = np.dot(ship_heading, wind_heading) / (np.linalg.norm(ship_heading) * np.linalg.norm(wind_heading))
+    dot = np.dot(ship_heading, wind_heading) / (
+        np.linalg.norm(ship_heading) * np.linalg.norm(wind_heading)
+    )
     current_angle = np.degrees(np.arccos(dot))
     wind_angle = np.degrees(np.arctan2(wind_heading[1], wind_heading[0]))
     # print(f"Ship/wind angle", 180-angle_difference(current_angle, wind_angle))
     for angle_offset in ANGLE_OFFSETS:
         new_angle = current_angle + angle_offset
 
-        new_heading = np.array([np.sin(np.radians(new_angle)), np.cos(np.radians(new_angle))])
-        new_dot = np.dot(wind_heading, new_heading) / (np.linalg.norm(wind_heading) * np.linalg.norm(new_heading))
+        new_heading = np.array(
+            [np.sin(np.radians(new_angle)), np.cos(np.radians(new_angle))]
+        )
+        new_dot = np.dot(wind_heading, new_heading) / (
+            np.linalg.norm(wind_heading) * np.linalg.norm(new_heading)
+        )
         new_speed_angle = np.degrees(np.arccos(new_dot))
         new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
         vectors.append(compute_ship_speed_vector(new_heading, new_speed))
@@ -178,12 +232,12 @@ def compute_proposed_new_ship_locations(
     """
     locations = []
     for v in compute_speed_vectors_for_angles(ship_heading, wind_heading):
-        new_location_vec = np.asarray([location.longitude, location.latitude]) + v*dt
+        new_location_vec = np.asarray([location.longitude, location.latitude]) + v * dt
         new_longitude, new_latitude = new_location_vec
-        # if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
-        #                        (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
-        #                        (new_longitude, new_latitude)):
-        #     locations.append(Location(longitude=new_longitude, latitude=new_latitude))
+        if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+                               (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+                               (new_longitude, new_latitude)):
+            locations.append(Location(longitude=new_longitude, latitude=new_latitude))
         locations.append(Location(longitude=new_longitude, latitude=new_latitude))
     return locations
 
@@ -238,7 +292,9 @@ def compute_best_ship_angle(
             ]
         )
         heading = heading / np.linalg.norm(heading)
-        speed = np.abs(np.cos(np.radians(np.degrees(np.arccos(np.dot(wind_heading, heading))) / 2)))
+        speed = np.abs(
+            np.cos(np.radians(np.degrees(np.arccos(np.dot(wind_heading, heading))) / 2))
+        )
         dist = distance_on_surface(
             longitude1=proposed_location.longitude,
             latitude1=proposed_location.latitude,
@@ -252,7 +308,9 @@ def compute_best_ship_angle(
     return best_angle
 
 
-def next_position(current_position: Location, heading: float, speed: float, dt: float) -> Location:
+def next_position(
+    current_position: Location, heading: float, speed: float, dt: float
+) -> Location:
     """
     Compute the next position of the ship given the current position, heading, speed and time step.
 
@@ -303,7 +361,7 @@ class Bot:
                 radius=5,
             ),
         ]
-        self.course.insert(0, self.course[-1]) # insert start as first checkpoint
+        self.course.insert(0, self.course[-1])  # insert start as first checkpoint
 
     def run(
         self,
@@ -404,8 +462,19 @@ class Bot:
                     dt=dt,
                 )
                 print(angle, wind_angle, ship_angle)
-                if should_change_direction(wind_angle, ship_angle, next_position=next_position(
-                        Location(longitude=longitude, latitude=latitude), heading=heading, speed=speed, dt=dt)) and angle is not None:
+                if (
+                    should_change_direction(
+                        wind_angle,
+                        ship_angle,
+                        next_position=next_position(
+                            Location(longitude=longitude, latitude=latitude),
+                            heading=heading,
+                            speed=speed,
+                            dt=dt,
+                        ),
+                    )
+                    and angle is not None
+                ):
                     if angle < 0:
                         instructions.left = abs(angle)
                     else:
