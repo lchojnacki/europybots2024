@@ -71,10 +71,11 @@ def angle_difference(angle1: float, angle2: float) -> float:
     return diff
 
 
-def should_change_direction(wind_angle, ship_angle, max_angle: int = 100) -> bool:
+def should_change_direction(wind_angle, ship_angle, next_position: Location, max_angle: int = 100) -> bool:
     """
-    Determine if the ship should change its direction based on the difference
-    between the wind angle and the ship's angle.
+    Determine if the ship should change its direction based on
+     * the difference between the wind angle and the ship's angle.
+     * Whether the ship is moving towards the disallowed location.
 
     Args:
         wind_angle: The angle of the wind in degrees.
@@ -85,7 +86,10 @@ def should_change_direction(wind_angle, ship_angle, max_angle: int = 100) -> boo
     Returns:
         A boolean indicating whether the ship should change its direction.
     """
-
+    # if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+    #                        (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+    #                        (next_position.longitude, next_position.latitude)):
+    #     return False
     return angle_difference(wind_angle, ship_angle) > max_angle
 
 
@@ -248,6 +252,32 @@ def compute_best_ship_angle(
     return best_angle
 
 
+def next_position(current_position: Location, heading: float, speed: float, dt: float) -> Location:
+    """
+    Compute the next position of the ship given the current position, heading, speed and time step.
+
+    Parameters
+    ----------
+    current_position:
+        The current location of the ship.
+    heading:
+        The heading of the ship.
+    speed:
+        The speed of the ship.
+    dt:
+        The time step in hours.
+
+    Returns
+    -------
+    next_position:
+        The next position of the ship.
+    """
+    return Location(
+        longitude=current_position.longitude + speed * np.cos(np.radians(heading)) * dt,
+        latitude=current_position.latitude + speed * np.sin(np.radians(heading)) * dt,
+    )
+
+
 class Bot:
     """
     This is the ship-controlling bot that will be instantiated for the competition.
@@ -374,7 +404,8 @@ class Bot:
                     dt=dt,
                 )
                 print(angle, wind_angle, ship_angle)
-                if should_change_direction(wind_angle, ship_angle) and angle is not None:
+                if should_change_direction(wind_angle, ship_angle, next_position=next_position(
+                        Location(longitude=longitude, latitude=latitude), heading=heading, speed=speed, dt=dt)) and angle is not None:
                     if angle < 0:
                         instructions.left = abs(angle)
                     else:
