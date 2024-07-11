@@ -266,6 +266,7 @@ class Bot:
                 radius=5,
             ),
         ]
+        self.course.insert(0, self.course[-1]) # insert start as first checkpoint
 
     def run(
         self,
@@ -336,7 +337,7 @@ class Bot:
         # ===========================================================
         # print(Simulate().simulate_position_after_moving_at_different_angles(longitude, latitude, speed, dt))
         # Go through all checkpoints and find the next one to reach
-        for ch in self.course:
+        for previous_ch, ch in zip(self.course, self.course[1:]):
             # Compute the distance to the checkpoint
             dist = distance_on_surface(
                 longitude1=longitude,
