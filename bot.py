@@ -17,10 +17,12 @@ from vendeeglobe import (
 )
 from vendeeglobe.utils import distance_on_surface
 
-ANGLE_OFFSETS: Final[tuple[int]] = tuple(range(-45, 46, 5))
+ANGLE_OFFSETS: Final[tuple[int]] = tuple(range(-45, 46, 1))
 
 PREVIOUS_CHECKPOINT: Checkpoint = None
 CURRENT_CHECKPOINT: Checkpoint = None
+
+WORLD_MAP: Callable = None
 
 
 def distance_point_to_line(segment_start, segment_end, point) -> float:
@@ -61,10 +63,23 @@ def is_position_allowed(segment_start, segment_end, position) -> bool:
         True if the position is allowed, False otherwise.
     """
     distance = distance_point_to_line(segment_start, segment_end, position)
-    x0, _ = position
-    scaled_x0 = 0.1 * x0
-    y = -np.pow(scaled_x0, 2) + 4
-    return distance <= y
+
+    x1, y1 = segment_start
+    x2, y2 = segment_end
+    x0, y0 = position
+
+    dx = x2 - x1
+    dy = y2 - y1
+
+    length = np.sqrt(dx**2 + dy**2)
+    new_x = np.sqrt((x0 - x1) ** 2 + abs(y0 - y1))
+    if np.isnan(new_x):
+        print(f"{x0=}, {x1=}, {y0=}, {y1=}")
+
+    y = (-np.pow(new_x, 2) + length * new_x + 20) * 0.01
+    # print(f"{new_x=}, {length=}, {y=}, {distance=}")
+
+    return distance <= y and WORLD_MAP(latitudes=position[1], longitudes=position[0])
 
 
 def wind_direction(u: float, v: float) -> float:
@@ -134,10 +149,12 @@ def should_change_direction(
     Returns:
         A boolean indicating whether the ship should change its direction.
     """
-    if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
-                           (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
-                           (next_position.longitude, next_position.latitude)):
-        return False
+    if not is_position_allowed(
+        (PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+        (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+        (next_position.longitude, next_position.latitude),
+    ):
+        return True
     return angle_difference(wind_angle, ship_angle) > max_angle
 
 
@@ -234,11 +251,12 @@ def compute_proposed_new_ship_locations(
     for v in compute_speed_vectors_for_angles(ship_heading, wind_heading):
         new_location_vec = np.asarray([location.longitude, location.latitude]) + v * dt
         new_longitude, new_latitude = new_location_vec
-        if is_position_allowed((PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
-                               (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
-                               (new_longitude, new_latitude)):
+        if is_position_allowed(
+            (PREVIOUS_CHECKPOINT.longitude, PREVIOUS_CHECKPOINT.latitude),
+            (CURRENT_CHECKPOINT.longitude, CURRENT_CHECKPOINT.latitude),
+            (new_longitude, new_latitude),
+        ):
             locations.append(Location(longitude=new_longitude, latitude=new_latitude))
-        locations.append(Location(longitude=new_longitude, latitude=new_latitude))
     return locations
 
 
@@ -345,20 +363,20 @@ class Bot:
         self.team = "The Ifers"  # This is your team name
         # This is the course that the ship has to follow
         self.course = [
-            Checkpoint(latitude=43.797109, longitude=-11.264905, radius=50),
-            Checkpoint(longitude=-29.908577, latitude=17.999811, radius=50),
-            Checkpoint(latitude=-11.441808, longitude=-29.660252, radius=50),
-            Checkpoint(longitude=-63.240264, latitude=-61.025125, radius=50),
+            Checkpoint(latitude=43.797109, longitude=-11.264905, radius=200),
+            Checkpoint(longitude=-29.908577, latitude=17.999811, radius=200),
+            Checkpoint(latitude=-11.441808, longitude=-29.660252, radius=200),
+            Checkpoint(longitude=-63.240264, latitude=-61.025125, radius=200),
             Checkpoint(latitude=2.806318, longitude=-168.943864, radius=1990.0),
-            Checkpoint(latitude=-62.052286, longitude=169.214572, radius=50.0),
+            Checkpoint(latitude=-62.052286, longitude=169.214572, radius=200),
             Checkpoint(latitude=-15.668984, longitude=77.674694, radius=1190.0),
-            Checkpoint(latitude=-39.438937, longitude=19.836265, radius=50.0),
-            Checkpoint(latitude=14.881699, longitude=-21.024326, radius=50.0),
-            Checkpoint(latitude=44.076538, longitude=-18.292936, radius=50.0),
+            Checkpoint(latitude=-39.438937, longitude=19.836265, radius=200),
+            Checkpoint(latitude=14.881699, longitude=-21.024326, radius=200),
+            Checkpoint(latitude=44.076538, longitude=-18.292936, radius=200),
             Checkpoint(
                 latitude=config.start.latitude,
                 longitude=config.start.longitude,
-                radius=5,
+                radius=1000,
             ),
         ]
         self.course.insert(0, self.course[-1])  # insert start as first checkpoint
@@ -423,6 +441,8 @@ class Bot:
         # Initialize the instructions
         instructions = Instructions()
         global PREVIOUS_CHECKPOINT, CURRENT_CHECKPOINT
+        global WORLD_MAP
+        WORLD_MAP = world_map
         # TODO: Remove this, it's only for testing =================
         current_wind = forecast(latitudes=latitude, longitudes=longitude, times=0)
         wind_angle = wind_direction(*current_wind)
@@ -454,6 +474,9 @@ class Bot:
                 # instructions.location = Location(
                 #     longitude=ch.longitude, latitude=ch.latitude
                 # )
+                if speed == 0:
+                    instructions.left = 180
+                    break
                 angle = compute_best_ship_angle(
                     location=Location(longitude=longitude, latitude=latitude),
                     ship_heading=np.asarray(vector),
