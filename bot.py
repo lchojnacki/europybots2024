@@ -403,12 +403,13 @@ class Bot:
                     reward = (100 * (speed + dist_from_prev_loc_to_loc / dt) / 2 ) / (100 * (dist_from_prev_loc - dist) + 10 * t + 1)
                     if dist < ch.radius:
                         self.dt_in_radius += dt
-                        print("Dt in radius", self.dt_in_radius / 4)
                         if self.dt_in_radius > 1:
                             reward -= self.dt_in_radius / 4
                     else:
                         self.dt_in_radius = 0
-                    if dist_from_prev_loc_to_loc < 0.1 and speed < 0.1:
+                    print("Speed", speed)
+                    print("Dist from prev loc to loc", dist_from_prev_loc_to_loc)
+                    if abs(dist_from_prev_loc_to_loc) < 0.01 and speed < 0.01:
                         print("Stuck")
                         self.dt_stuck += dt
                         if self.dt_stuck > 1:
@@ -417,8 +418,8 @@ class Bot:
                             instructions.right = None
                             random_vector = np.random.rand(2).tolist()
                             instructions.vector = Vector(u=random_vector[0], v=random_vector[1])
-                        else:
-                            self.dt_stuck = 0
+                    else:
+                        self.dt_stuck = 0
                     reward -= self.dt_stuck / 2
                     self.previous_location = Location(longitude=longitude, latitude=latitude)
                     print(reward)
