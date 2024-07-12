@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
+import itertools
 import random
 # flake8: noqa F401
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
+import torch
 
 from vendeeglobe import (
     Checkpoint,
@@ -15,219 +18,199 @@ from vendeeglobe import (
 )
 from vendeeglobe.utils import distance_on_surface
 
-
-def wind_direction(u: float, v: float) -> float:
-    """
-    Calculate the meteorological wind direction based on the horizontal wind
-    components.
-
-    Args:
-        u: Horizontal wind component in the x-direction.
-        v: Horizontal wind component in the y-direction.
-
-    Returns:
-        The meteorological wind direction in degrees.
-    """
-
-    # Calculate the angle using atan2
-    theta = np.atan2(v, u)
-
-    # Convert the angle from radians to degrees
-    theta_degrees = np.degrees(theta)
-
-    # Convert to meteorological wind direction
-    direction = (270 - theta_degrees) % 360
-
-    return direction
+import math
+import random
+from collections import namedtuple, deque
+from torch.nn import functional as F
 
 
-def angle_difference(angle1: float, angle2: float) -> float:
-    """
-    Calculate the absolute difference between two angles and normalize it to be
-    within 0 to 360 degrees.
+import torch
+from torch import nn, optim
 
-    Args:
-        angle1: The first angle in degrees.
-        angle2: The second angle in degrees.
-
-    Returns:
-        The normalized absolute difference between the two angles in degrees.
-    """
-
-    # Calculate the absolute difference using numpy
-    diff = np.abs(angle1 - angle2)
-
-    # Normalize the difference to be within 0 to 360 degrees
-    diff = diff % 360
-
-    # Adjust if the difference is greater than 180 degrees
-    diff: float = np.where(diff > 180, 360 - diff, diff)
-
-    return diff
+Transition = namedtuple("Transition", ("state", "action", "next_state", "reward"))
 
 
-def should_change_direction(wind_angle, ship_angle, max_angle: int = 100) -> bool:
-    """
-    Determine if the ship should change its direction based on the difference
-    between the wind angle and the ship's angle.
+BATCH_SIZE = 128
+GAMMA = 0.99
+EPS_START = 0.9
+EPS_END = 0.05
+EPS_DECAY = 1000
+TAU = 0.005
+LR = 1e-4
 
-    Args:
-        wind_angle: The angle of the wind in degrees.
-        ship_angle: The ship's current angle in degrees.
-        max_angle: The maximum allowable angle difference for not changing
-                   direction (default is 100 degrees).
+# Get number of actions from gym action space
+# actions:
+#: left 15 degrees
+#: right 15 degrees
+#: left 30 degrees
+#: right 30 degrees
+#: left 45 degrees
+#: right 45 degrees
+#: go to location
+n_actions = 7
+# Get the number of state observations
+map_size = 100
+n_observations = 5 + map_size**2
 
-    Returns:
-        A boolean indicating whether the ship should change its direction.
-    """
-
-    return angle_difference(wind_angle, ship_angle) > max_angle
-
-
-def compute_ship_speed_vector(heading: np.ndarray, speed: float) -> np.ndarray:
-    """
-    Compute the speed vector from the heading and speed.
-
-    Parameters
-    ----------
-    heading:
-        The heading of the ship.
-    speed:
-        The speed of the ship.
-
-    Returns
-    -------
-    vector:
-        The speed vector.
-    """
-    return speed * heading
+# if GPU is to be used
+device = torch.device(
+    "cuda"
+    if torch.cuda.is_available()
+    else "mps"
+    if torch.backends.mps.is_available()
+    else "cpu"
+)
 
 
-def compute_speed_vectors_for_angles(
-    ship_heading: np.ndarray, wind_heading: np.ndarray
-) -> list[np.ndarray]:
-    """
-    Compute the speed vectors for the ship at different angles.
+class ReplayMemory(object):
+    def __init__(self, capacity):
+        self.memory = deque([], maxlen=capacity)
 
-    Parameters
-    ----------
-    ship_heading:
-        The heading of the ship.
-    wind_heading:
-        The heading of the wind.
+    def push(self, *args):
+        """Save a transition"""
+        self.memory.append(Transition(*args))
 
-    Returns
-    -------
-    vectors:
-        The speed vectors for the ship at different angles.
-    """
-    vectors = []
-    current_angle = np.degrees(np.arccos(np.dot(ship_heading, wind_heading)))
-    for angle_offset in (-30, -15, 0, 15, 30):
-        angle = current_angle + angle_offset
-        new_heading = np.array([np.sin(np.radians(angle)), np.cos(np.radians(angle))])
-        new_speed_angle = np.degrees(np.arccos(np.dot(wind_heading, new_heading)))
-        new_speed = np.abs(np.cos(np.radians(new_speed_angle / 2)))
-        vectors.append(compute_ship_speed_vector(new_heading, new_speed))
-    return vectors
+    def sample(self, batch_size):
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        return len(self.memory)
 
 
-def compute_proposed_new_ship_locations(
-    location: Location,
-    ship_heading: np.ndarray,
-    wind_heading: np.ndarray,
-    dt: float,
-) -> list[Location]:
-    """
-    Compute the proposed new ship positions for different angles.
+class DQN(nn.Module):
+    def __init__(self, n_observations, n_actions):
+        super(DQN, self).__init__()
+        self.layer1 = nn.Linear(n_observations, 1024)
+        self.dropout1 = nn.Dropout(0.2)
+        self.layer_norm1 = nn.LayerNorm(1024)
+        self.layer2 = nn.Linear(1024, 512)
+        self.dropout2 = nn.Dropout(0.2)
+        self.layer_norm2 = nn.LayerNorm(512)
+        self.layer3 = nn.Linear(512, 256)
+        self.dropout3 = nn.Dropout(0.2)
+        self.layer_norm3 = nn.LayerNorm(256)
+        self.layer4 = nn.Linear(256, n_actions)
+        torch.nn.init.xavier_uniform_(self.layer1.weight)
+        torch.nn.init.xavier_uniform_(self.layer2.weight)
+        torch.nn.init.xavier_uniform_(self.layer3.weight)
+        torch.nn.init.xavier_uniform_(self.layer4.weight)
 
-    Parameters
-    ----------
-    location:
-        The current location of the ship.
-    ship_heading:
-        The heading of the ship.
-    wind_heading:
-        The heading of the wind.
-    dt:
-        The time step in hours.
-
-    Returns
-    -------
-    locations:
-        The proposed new ship positions for different angles.
-    """
-    locations = []
-    for v in compute_speed_vectors_for_angles(ship_heading, wind_heading):
-        new_location_vec = np.asarray([location.longitude, location.latitude]) + v*dt
-        new_longitude, new_latitude = new_location_vec
-        locations.append(Location(longitude=new_longitude, latitude=new_latitude))
-    return locations
+    # Called with either one element to determine next action, or a batch
+    # during optimization. Returns tensor([[left0exp,right0exp]...]).
+    def forward(self, x):
+        x = F.relu(self.layer1(x))
+        x = self.dropout1(x)
+        x = self.layer_norm1(x)
+        x = F.relu(self.layer2(x))
+        x = self.dropout2(x)
+        x = self.layer_norm2(x)
+        x = F.relu(self.layer3(x))
+        x = self.dropout3(x)
+        x = self.layer_norm3(x)
+        return self.layer4(x)
 
 
-def compute_best_ship_angle(
-    location: Location,
-    ship_heading: np.ndarray,
-    wind_heading: np.ndarray,
-    destination: Location,
-    dt: float,
-) -> float:
-    """
-    Compute the best ship position to reach the destination.
+policy_net = DQN(n_observations, n_actions).to(device)
+target_net = DQN(n_observations, n_actions).to(device)
+target_net.load_state_dict(policy_net.state_dict())
+optimizer = optim.AdamW(policy_net.parameters(), lr=LR, amsgrad=True)
 
-    We first compute the proposed new ship positions for different angles.
-    Then at each proposed location, we compute the heading to the destination.
-    For each heading, we compute the speed value based on the wind direction.
-    Finally, we select the location that will take us to the destination the fastest.
+# if Path("policy_net.pth").exists():
+#     policy_net.load_state_dict(torch.load("policy_net.pth"))
+# if Path("target_net.pth").exists():
+#     target_net.load_state_dict(torch.load("target_net.pth"))
+# if Path("optimizer.pth").exists():
+#     optimizer.load_state_dict(torch.load("optimizer.pth"))
 
-    Parameters
-    ----------
-    location:
-        The current location of the ship.
-    ship_heading:
-        The heading of the ship.
-    wind_heading:
-        The heading of the wind.
-    destination:
-        The destination location.
-    dt:
-        The time step in hours.
+memory = ReplayMemory(10_000)
 
-    Returns
-    -------
-    best_location:
-        The best ship position to reach the destination.
-    """
-    wind_heading = wind_heading / np.linalg.norm(wind_heading)
-    proposed_locations = compute_proposed_new_ship_locations(
-        location=location,
-        ship_heading=ship_heading,
-        wind_heading=wind_heading,
-        dt=dt,
+steps_done = 0
+
+
+def select_action(state):
+    global steps_done
+    sample = random.random()
+    eps_threshold = EPS_END + (EPS_START - EPS_END) * math.exp(
+        -1.0 * steps_done / EPS_DECAY
     )
-    best_angle = None
-    best_time = np.inf
-    for proposed_location, angle in zip(proposed_locations, (-30, -15, 0, 15, 30)):
-        heading = np.array(
-            [
-                destination.longitude - proposed_location.longitude,
-                destination.latitude - proposed_location.latitude,
-            ]
+    steps_done += 1
+    if sample <= eps_threshold:
+        return torch.tensor(
+            [[random.randint(0, n_actions - 1)]], device=device, dtype=torch.long
         )
-        heading = heading / np.linalg.norm(heading)
-        speed = np.abs(np.cos(np.radians(np.degrees(np.arccos(np.dot(wind_heading, heading))) / 2)))
-        dist = distance_on_surface(
-            longitude1=proposed_location.longitude,
-            latitude1=proposed_location.latitude,
-            longitude2=destination.longitude,
-            latitude2=destination.latitude,
-        )
-        time = dist / speed if speed > 0 else np.inf
-        if time < best_time:
-            best_time = time
-            best_angle = angle
-    return best_angle
+    with torch.no_grad():
+        # t.max(1) will return the largest column value of each row.
+        # second column on max result is index of where max element was
+        # found, so we pick action with the larger expected reward.
+        return policy_net(state).max(1).indices.view(1, 1)
 
+
+def optimize_model():
+    if len(memory) < BATCH_SIZE:
+        return
+    transitions = memory.sample(BATCH_SIZE)
+    # Transpose the batch (see https://stackoverflow.com/a/19343/3343043 for
+    # detailed explanation). This converts batch-array of Transitions
+    # to Transition of batch-arrays.
+    batch = Transition(*zip(*transitions))
+
+    # Compute a mask of non-final states and concatenate the batch elements
+    # (a final state would've been the one after which simulation ended)
+    non_final_mask = torch.tensor(
+        tuple(map(lambda s: s is not None, batch.next_state)),
+        device=device,
+        dtype=torch.bool,
+    )
+    non_final_next_states = torch.cat([s for s in batch.next_state if s is not None])
+    state_batch = torch.cat(batch.state)
+    action_batch = torch.cat(batch.action)
+    reward_batch = torch.cat(batch.reward)
+
+    # Compute Q(s_t, a) - the model computes Q(s_t), then we select the
+    # columns of actions taken. These are the actions which would've been taken
+    # for each batch state according to policy_net
+    state_action_values = policy_net(state_batch).gather(1, action_batch)
+
+    # Compute V(s_{t+1}) for all next states.
+    # Expected values of actions for non_final_next_states are computed based
+    # on the "older" target_net; selecting their best reward with max(1).values
+    # This is merged based on the mask, such that we'll have either the expected
+    # state value or 0 in case the state was final.
+    next_state_values = torch.zeros(BATCH_SIZE, device=device)
+    with torch.no_grad():
+        next_state_values[non_final_mask] = (
+            target_net(non_final_next_states).max(1).values
+        )
+    # Compute the expected Q values
+    expected_state_action_values = (next_state_values * GAMMA) + reward_batch
+
+    # Compute Huber loss
+    criterion = nn.SmoothL1Loss()
+    loss = criterion(state_action_values, expected_state_action_values.unsqueeze(1))
+
+    # Optimize the model
+    optimizer.zero_grad()
+    loss.backward()
+    # In-place gradient clipping
+    torch.nn.utils.clip_grad_value_(policy_net.parameters(), 100)
+    optimizer.step()
+    if steps_done % 100 == 0:
+        torch.save(policy_net.state_dict(), "policy_net.pth")
+        torch.save(target_net.state_dict(), "target_net.pth")
+        torch.save(optimizer.state_dict(), "optimizer.pth")
+
+
+if torch.cuda.is_available() or torch.backends.mps.is_available():
+    num_episodes = 600
+else:
+    num_episodes = 50
+
+def trunc_lat(lat):
+    return max(-90, min(90, lat))
+
+
+def trunc_lon(lon):
+    return max(-180, min(180, lon))
 
 class Bot:
     """
@@ -238,22 +221,27 @@ class Bot:
         self.team = "The Ifers"  # This is your team name
         # This is the course that the ship has to follow
         self.course = [
-            Checkpoint(latitude=43.797109, longitude=-11.264905, radius=50),
-            Checkpoint(longitude=-29.908577, latitude=17.999811, radius=50),
-            Checkpoint(latitude=-11.441808, longitude=-29.660252, radius=50),
-            Checkpoint(longitude=-63.240264, latitude=-61.025125, radius=50),
+            Checkpoint(latitude=43.797109, longitude=-11.264905, radius=200.),
+            Checkpoint(longitude=-29.908577, latitude=17.999811, radius=300.),
+            Checkpoint(latitude=-11.441808, longitude=-29.660252, radius=200.),
+            Checkpoint(longitude=-63.240264, latitude=-61.025125, radius=100.),
             Checkpoint(latitude=2.806318, longitude=-168.943864, radius=1990.0),
-            Checkpoint(latitude=-62.052286, longitude=169.214572, radius=50.0),
+            Checkpoint(latitude=-62.052286, longitude=169.214572, radius=600.0),
             Checkpoint(latitude=-15.668984, longitude=77.674694, radius=1190.0),
-            Checkpoint(latitude=-39.438937, longitude=19.836265, radius=50.0),
-            Checkpoint(latitude=14.881699, longitude=-21.024326, radius=50.0),
-            Checkpoint(latitude=44.076538, longitude=-18.292936, radius=50.0),
+            Checkpoint(latitude=-39.438937, longitude=19.836265, radius=200.0),
+            Checkpoint(latitude=14.881699, longitude=-21.024326, radius=100.0),
+            Checkpoint(latitude=44.076538, longitude=-18.292936, radius=100.0),
             Checkpoint(
                 latitude=config.start.latitude,
                 longitude=config.start.longitude,
                 radius=5,
             ),
         ]
+        # zeros of n_observations
+        self.state = torch.zeros(n_observations, device=device).unsqueeze(0)
+        self.previous_location = None
+        self.dt_stuck = 0
+        self.dt_in_radius = 0
 
     def run(
         self,
@@ -314,13 +302,10 @@ class Bot:
         """
         # Initialize the instructions
         instructions = Instructions()
-
         # TODO: Remove this, it's only for testing =================
         current_wind = forecast(latitudes=latitude, longitudes=longitude, times=0)
-        wind_angle = wind_direction(*current_wind)
-        ship_angle = wind_direction(*vector)
-
         current_position_terrain = world_map(latitudes=latitude, longitudes=longitude)
+
         # ===========================================================
 
         # Go through all checkpoints and find the next one to reach
@@ -342,25 +327,119 @@ class Bot:
             if dist < ch.radius:
                 ch.reached = True
             if not ch.reached:
-                # instructions.location = Location(
-                #     longitude=ch.longitude, latitude=ch.latitude
-                # )
-                angle = compute_best_ship_angle(
-                    location=Location(longitude=longitude, latitude=latitude),
-                    ship_heading=np.asarray(vector),
-                    wind_heading=np.asarray(current_wind),
-                    destination=Location(longitude=ch.longitude, latitude=ch.latitude),
-                    dt=dt,
-                )
-                print(angle, wind_angle, ship_angle)
-                if should_change_direction(wind_angle, ship_angle) and angle is not None:
-                    if angle < 0:
-                        instructions.left = abs(angle)
-                    else:
-                        instructions.right = abs(angle)
-                else:
+                # actions:
+                #: left 15 degrees
+                #: right 15 degrees
+                #: left 30 degrees
+                #: right 30 degrees
+                #: left 45 degrees
+                #: right 45 degrees
+                #: go to location
+                action = select_action(self.state)
+                action_item = action.item()
+
+                if action_item == 0:
+                    instructions.left = 5
+                elif action_item == 1:
+                    instructions.right = 5
+                elif action_item == 2:
+                    instructions.left = 10
+                elif action_item == 3:
+                    instructions.right = 10
+                elif action_item == 4:
+                    instructions.left = 15
+                elif action_item == 5:
+                    instructions.right = 15
+                elif action_item == 6:
                     instructions.location = Location(
                         longitude=ch.longitude, latitude=ch.latitude
                     )
+                else:
+                    raise ValueError("Invalid action")
+                map_20_20 = np.zeros((map_size, map_size))
+                for i, j in itertools.product(
+                    range(-map_size // 2, map_size // 2),
+                    range(-map_size // 2, map_size // 2),
+                ):
+                    try:
+                        map_20_20[i + map_size // 2, j + map_size // 2] = world_map(
+                            latitudes=trunc_lat(latitude + i/1000),
+                            longitudes=trunc_lon(longitude + j/1000),
+                        )
+                    except:
+                        map_20_20[i + map_size // 2, j + map_size // 2] = 0
+
+                    next_state = torch.tensor(
+                        [
+                            t,
+                            longitude,
+                            latitude,
+                            *current_wind,
+                            *map_20_20.flatten(),
+                        ],
+                        dtype=torch.float32,
+                        device=device,
+                    ).unsqueeze(0)
+
+                    # compute reward as the negative of the distance to the checkpoint and the positive of the speed
+                    # we reward the decrease in distance and the increase in speed
+                    # we penalize the time spent
+                    if self.previous_location is None:
+                        dist_from_prev_loc_to_loc = 1
+                        dist_from_prev_loc = 1
+                    else:
+                        dist_from_prev_loc_to_loc = distance_on_surface(
+                            longitude1=self.previous_location.longitude,
+                            latitude1=self.previous_location.latitude,
+                            longitude2=longitude,
+                            latitude2=latitude,
+                        )
+                        dist_from_prev_loc = distance_on_surface(
+                            longitude1=self.previous_location.longitude,
+                            latitude1=self.previous_location.latitude,
+                            longitude2=ch.longitude,
+                            latitude2=ch.latitude,
+                        )
+                    reward = (100 * (speed + dist_from_prev_loc_to_loc / dt) / 2 ) / (100 * (dist_from_prev_loc - dist) + 10 * t + 1)
+                    if dist < ch.radius:
+                        self.dt_in_radius += dt
+                        print("Dt in radius", self.dt_in_radius / 4)
+                        if self.dt_in_radius > 1:
+                            reward -= self.dt_in_radius / 4
+                    else:
+                        self.dt_in_radius = 0
+                    if dist_from_prev_loc_to_loc < 0.1 and speed < 0.1:
+                        print("Stuck")
+                        self.dt_stuck += dt
+                        if self.dt_stuck > 1:
+                            print("Random direction")
+                            instructions.left = None
+                            instructions.right = None
+                            random_vector = np.random.rand(2).tolist()
+                            instructions.vector = Vector(u=random_vector[0], v=random_vector[1])
+                        else:
+                            self.dt_stuck = 0
+                    reward -= self.dt_stuck / 2
+                    self.previous_location = Location(longitude=longitude, latitude=latitude)
+                    print(reward)
+                    reward = torch.tensor([reward], device=device, dtype=torch.float32)
+                    # Store the transition in memory
+                    memory.push(self.state, action, next_state, reward)
+
+                    # Move to the next state
+                    self.state = next_state
+
+                    # Perform one step of the optimization (on the policy network)
+                    optimize_model()
+
+                    # Soft update of the target network's weights
+                    # θ′ ← τ θ + (1 −τ )θ′
+                    target_net_state_dict = target_net.state_dict()
+                    policy_net_state_dict = policy_net.state_dict()
+                    for key in policy_net_state_dict:
+                        target_net_state_dict[key] = policy_net_state_dict[key] * TAU + target_net_state_dict[key] * (
+                                    1 - TAU)
+                    target_net.load_state_dict(target_net_state_dict)
+                    break
                 break
         return instructions
